@@ -1,20 +1,17 @@
 """
 CopyNova AI - Telegram Microservice
 Handles OTP sending and channel fetching
-Deployed on Render.com
 """
 import os
 import asyncio
-import json
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# CopyNova's Telegram API credentials (set in Render environment variables)
 API_ID = int(os.environ.get('TELEGRAM_API_ID', '23111641'))
 API_HASH = os.environ.get('TELEGRAM_API_HASH', '6288120282735bf0fecc4753ee60b1b8')
 
-# Store active sessions (in production, use Redis)
+# Store sessions as strings (survives restarts if needed)
 sessions = {}
 
 @app.route('/')
@@ -23,23 +20,24 @@ def home():
 
 @app.route('/send-code', methods=['POST'])
 def send_code():
-    """Send OTP to user's Telegram"""
     try:
         data = request.json
         phone = data.get('phone')
         
         if not phone:
             return jsonify({'success': False, 'error': 'Phone number required'}), 400
-        
-        # Import here to avoid cold start issues
+
         from telethon import TelegramClient
+        from telethon.sessions import StringSession
         
         async def _send():
-            client = TelegramClient(f'session_{phone.replace("+", "")}', API_ID, API_HASH)
+            client = TelegramClient(StringSession(), API_ID, API_HASH)
             await client.connect()
             result = await client.send_code_request(phone)
+            # Store session as string
+            session_string = client.session.save()
             sessions[phone] = {
-                'client': client,
+                'session_string': session_string,
                 'phone_code_hash': result.phone_code_hash
             }
             return True
@@ -51,7 +49,7 @@ def send_code():
         return jsonify({
             'success': True,
             'message': f'OTP sent to {phone}. Check your Telegram app!',
-            'phoneHash': phone[-4:]  # Last 4 digits for verification
+            'phoneHash': phone[-4:]
         })
     except Exception as e:
         print(f"Send code error: {e}")
@@ -59,7 +57,6 @@ def send_code():
 
 @app.route('/verify-code', methods=['POST'])
 def verify_code():
-    """Verify OTP and fetch channels"""
     try:
         data = request.json
         phone = data.get('phone')
@@ -70,21 +67,26 @@ def verify_code():
         
         session_data = sessions.get(phone)
         if not session_data:
-            return jsonify({'success': False, 'error': 'No active session. Send OTP first.'}), 400
-        
+            return jsonify({'success': False, 'error': 'No active session. Please send OTP again.'}), 400
+
         from telethon import TelegramClient
+        from telethon.sessions import StringSession
         from telethon.tl.functions.messages import GetDialogsRequest
         from telethon.tl.types import InputPeerEmpty
         
         async def _verify():
-            client = session_data['client']
+            # Recreate client from saved session
+            client = TelegramClient(
+                StringSession(session_data['session_string']), 
+                API_ID, 
+                API_HASH
+            )
+            await client.connect()
             await client.sign_in(
                 phone=phone,
                 code=code,
                 phone_code_hash=session_data['phone_code_hash']
             )
-            
-            print(f"✅ Signed in as {phone}")
             
             dialogs = await client(GetDialogsRequest(
                 offset_date=None, offset_id=0, offset_peer=InputPeerEmpty(),
