@@ -11,7 +11,6 @@ app = Flask(__name__)
 API_ID = int(os.environ.get('TELEGRAM_API_ID', '23111641'))
 API_HASH = os.environ.get('TELEGRAM_API_HASH', '6288120282735bf0fecc4753ee60b1b8')
 
-# Store sessions as strings (survives restarts if needed)
 sessions = {}
 
 @app.route('/')
@@ -34,7 +33,6 @@ def send_code():
             client = TelegramClient(StringSession(), API_ID, API_HASH)
             await client.connect()
             result = await client.send_code_request(phone)
-            # Store session as string
             session_string = client.session.save()
             sessions[phone] = {
                 'session_string': session_string,
@@ -75,7 +73,6 @@ def verify_code():
         from telethon.tl.types import InputPeerEmpty
         
         async def _verify():
-            # Recreate client from saved session
             client = TelegramClient(
                 StringSession(session_data['session_string']), 
                 API_ID, 
@@ -97,19 +94,35 @@ def verify_code():
             for dialog in dialogs.dialogs:
                 try:
                     entity = await client.get_entity(dialog.peer)
+                    
+                    # Get the ID and ensure proper format for Telegram Bot API
+                    raw_id = str(entity.id)
+                    
+                    # Channels and supergroups need -100 prefix for Bot API
                     if hasattr(entity, 'broadcast') and entity.broadcast:
+                        # It's a channel
+                        if raw_id.startswith('-100'):
+                            channel_id = raw_id
+                        else:
+                            channel_id = f'-100{raw_id}'
                         channels.append({
-                            'id': str(entity.id),
+                            'id': channel_id,
                             'title': entity.title,
                             'type': 'channel'
                         })
                     elif hasattr(entity, 'megagroup') and entity.megagroup:
+                        # It's a supergroup
+                        if raw_id.startswith('-100'):
+                            channel_id = raw_id
+                        else:
+                            channel_id = f'-100{raw_id}'
                         channels.append({
-                            'id': str(entity.id),
+                            'id': channel_id,
                             'title': entity.title,
                             'type': 'group'
                         })
-                except:
+                except Exception as e:
+                    print(f"Error processing dialog: {e}")
                     pass
             
             await client.disconnect()
