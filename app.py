@@ -8,12 +8,14 @@ st.set_page_config(page_title="CopyNova AI - Channel Finder", page_icon="🔍")
 st.title("🔍 CopyNova AI - Channel Finder")
 st.caption("Find your Telegram channels and sync them to your dashboard")
 
-# Step 1: Get CopyNova API Key
+# Hardcoded server URL - users don't need to enter this
+SERVER_URL = "https://consoling-botch-sulphuric.ngrok-free.dev"
+
+# Step 1: CopyNova API Key
 st.subheader("Step 1: CopyNova API Key")
 api_key = st.text_input("Enter your CopyNova API Key", type="password", 
     help="Get this from your CopyNova dashboard → API Keys")
-server_url = st.text_input("Server URL", value="https://your-server.com",
-    help="Your CopyNova server URL")
+st.caption("Get your API key from Dashboard → API Keys")
 
 # Step 2: Telegram Credentials
 st.subheader("Step 2: Telegram API Credentials")
@@ -22,7 +24,7 @@ api_id = st.text_input("API ID")
 api_hash = st.text_input("API Hash", type="password")
 phone = st.text_input("Phone Number (+91...)")
 
-if st.button("🔍 Find My Channels", type="primary", disabled=not (api_key and api_id and api_hash and phone)):
+if st.button("🔍 Find My Channels & Sync", type="primary", disabled=not (api_key and api_id and api_hash and phone)):
     try:
         from telethon import TelegramClient
         from telethon.tl.functions.messages import GetDialogsRequest
@@ -63,26 +65,27 @@ if st.button("🔍 Find My Channels", type="primary", disabled=not (api_key and 
     if channels:
         st.success(f"Found {len(channels)} channels!")
         
-        # Display channels
-        st.subheader("Your Channels")
-        for ch in channels:
-            st.write(f"📢 **{ch['title']}** ({ch['type']}) - ID: `{ch['id']}`")
-        
-        # Sync to server
-        with st.spinner("Syncing to your dashboard..."):
+        # Auto-sync to server
+        with st.spinner(f"Syncing {len(channels)} channels to your dashboard..."):
             try:
                 res = requests.post(
-                    f"{server_url}/api/user/sync-channels?key={api_key}",
+                    f"{SERVER_URL}/api/user/sync-channels?key={api_key}",
                     json={"channels": channels},
-                    headers={"Content-Type": "application/json"}
+                    headers={"Content-Type": "application/json", "ngrok-skip-browser-warning": "true"}
                 )
                 if res.status_code == 200:
-                    st.success(f"✅ {len(channels)} channels synced to your dashboard!")
-                    st.info("Go back to your dashboard and click 'Load My Channels'")
+                    st.success(f"✅ {len(channels)} channels synced successfully!")
+                    st.info("🎉 Go to your dashboard → Telegram → Add Channel and click 'Load My Channels'")
                     st.balloons()
+                    
+                    # Show channels
+                    st.subheader("📋 Synced Channels")
+                    for ch in channels:
+                        st.write(f"• **{ch['title']}** ({ch['type']})")
                 else:
-                    st.error(f"Failed to sync: {res.json().get('error', 'Unknown error')}")
+                    error = res.json().get('error', 'Unknown error')
+                    st.error(f"Sync failed: {error}")
             except Exception as e:
                 st.error(f"Connection error: {e}")
     else:
-        st.warning("No channels found. Make sure you're a member of some channels.")
+        st.warning("No channels found. Make sure you're a member of some channels/groups.")
