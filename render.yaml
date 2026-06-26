@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: copynova-telegram-service
+    env: python
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: TELEGRAM_API_ID
+        value: "23111641"
+      - key: TELEGRAM_API_HASH
+        value: "6288120282735bf0fecc4753ee60b1b8"
