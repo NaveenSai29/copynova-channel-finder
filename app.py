@@ -1,5 +1,8 @@
 import streamlit as st
 import requests
+import subprocess
+import json
+import os
 import sys
 
 st.set_page_config(page_title="CopyNova AI - Channel Finder", page_icon="🔍")
@@ -12,18 +15,16 @@ SERVER_URL = "https://consoling-botch-sulphuric.ngrok-free.dev"
 # Initialize session state
 if "step" not in st.session_state:
     st.session_state.step = "credentials"
-if "phone_code_hash" not in st.session_state:
-    st.session_state.phone_code_hash = None
 if "found_channels" not in st.session_state:
     st.session_state.found_channels = []
-if "api_id" not in st.session_state:
-    st.session_state.api_id = ""
-if "api_hash" not in st.session_state:
-    st.session_state.api_hash = ""
-if "phone" not in st.session_state:
-    st.session_state.phone = ""
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
+
+# Install telethon if needed
+try:
+    import telethon
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "telethon", "cryptg"])
 
 # ============ STEP 1: CREDENTIALS ============
 if st.session_state.step == "credentials":
@@ -37,96 +38,84 @@ if st.session_state.step == "credentials":
     api_hash = st.text_input("API Hash", type="password")
     phone = st.text_input("Phone Number (+91...)", placeholder="+919876543210")
     
-    if st.button("📱 Send Verification Code", type="primary", disabled=not (api_key and api_id and api_hash and phone)):
+    if st.button("🔍 Find My Channels", type="primary", disabled=not (api_key and api_id and api_hash and phone)):
+        # Create a Python script that runs telethon independently
+        script = f'''
+import asyncio
+import json
+import sys
+sys.path.insert(0, '{os.path.dirname(os.path.abspath(__file__))}')
+
+async def main():
+    from telethon import TelegramClient
+    from telethon.tl.functions.messages import GetDialogsRequest
+    from telethon.tl.types import InputPeerEmpty
+    
+    client = TelegramClient('session_{phone}', {api_id}, '{api_hash}')
+    await client.start(phone='{phone}')
+    
+    dialogs = await client(GetDialogsRequest(
+        offset_date=None, offset_id=0, offset_peer=InputPeerEmpty(),
+        limit=200, hash=0
+    ))
+    
+    channels = []
+    for dialog in dialogs.dialogs:
         try:
-            from telethon import TelegramClient
-            
-            # Create new event loop for this operation
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            async def send():
-                client = TelegramClient('session', int(api_id), api_hash)
-                await client.connect()
-                result = await client.send_code_request(phone)
-                return result.phone_code_hash
-            
-            with st.spinner("Sending verification code..."):
-                phone_code_hash = loop.run_until_complete(send())
-            
-            st.session_state.phone_code_hash = phone_code_hash
-            st.session_state.api_id = api_id
-            st.session_state.api_hash = api_hash
-            st.session_state.phone = phone
-            st.session_state.api_key = api_key
-            st.session_state.step = "verify"
-            st.rerun()
-        except Exception as e:
-            st.error(f"Failed: {str(e)}")
+            entity = await client.get_entity(dialog.peer)
+            if hasattr(entity, 'broadcast') and entity.broadcast:
+                channels.append({{'id': str(entity.id), 'title': entity.title, 'type': 'channel'}})
+            elif hasattr(entity, 'megagroup') and entity.megagroup:
+                channels.append({{'id': str(entity.id), 'title': entity.title, 'type': 'group'}})
+        except:
+            pass
+    
+    await client.disconnect()
+    print(json.dumps(channels))
 
-# ============ STEP 2: VERIFY OTP ============
-elif st.session_state.step == "verify":
-    st.subheader("📱 Verify Your Phone Number")
-    st.caption(f"Code sent to {st.session_state.phone}. Check Telegram app.")
-    
-    code = st.text_input("Enter Verification Code", placeholder="12345")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("✅ Verify & Find Channels", type="primary", disabled=not code):
+asyncio.run(main())
+'''
+        
+        script_path = '/tmp/find_channels.py'
+        with open(script_path, 'w') as f:
+            f.write(script)
+        
+        with st.spinner("Connecting to Telegram... This may take a moment."):
             try:
-                from telethon import TelegramClient
-                from telethon.tl.functions.messages import GetDialogsRequest
-                from telethon.tl.types import InputPeerEmpty
-                import asyncio
+                result = subprocess.run(
+                    [sys.executable, script_path],
+                    capture_output=True, text=True, timeout=60
+                )
                 
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                async def verify():
-                    client = TelegramClient('session', int(st.session_state.api_id), st.session_state.api_hash)
-                    await client.connect()
-                    await client.sign_in(
-                        phone=st.session_state.phone,
-                        code=code,
-                        phone_code_hash=st.session_state.phone_code_hash
-                    )
+                if result.returncode == 0:
+                    output = result.stdout.strip()
+                    # Find the JSON part (last line)
+                    lines = output.split('\n')
+                    json_line = None
+                    for line in reversed(lines):
+                        line = line.strip()
+                        if line.startswith('['):
+                            json_line = line
+                            break
                     
-                    dialogs = await client(GetDialogsRequest(
-                        offset_date=None, offset_id=0, offset_peer=InputPeerEmpty(),
-                        limit=200, hash=0
-                    ))
-                    
-                    channels = []
-                    for dialog in dialogs.dialogs:
-                        try:
-                            entity = await client.get_entity(dialog.peer)
-                            if hasattr(entity, 'broadcast') and entity.broadcast:
-                                channels.append({'id': str(entity.id), 'title': entity.title, 'type': 'channel'})
-                            elif hasattr(entity, 'megagroup') and entity.megagroup:
-                                channels.append({'id': str(entity.id), 'title': entity.title, 'type': 'group'})
-                        except:
-                            pass
-                    
-                    await client.disconnect()
-                    return channels
-                
-                with st.spinner("Verifying and fetching channels..."):
-                    channels = loop.run_until_complete(verify())
-                
-                st.session_state.found_channels = channels
-                st.session_state.step = "channels"
-                st.rerun()
+                    if json_line:
+                        channels = json.loads(json_line)
+                        st.session_state.found_channels = channels
+                        st.session_state.api_key = api_key
+                        st.session_state.step = "channels"
+                        st.rerun()
+                    else:
+                        st.error("Could not parse channels. Raw output:")
+                        st.code(output)
+                else:
+                    st.error(f"Error: {result.stderr}")
+                    st.code(result.stdout + "\n" + result.stderr)
+            except subprocess.TimeoutExpired:
+                st.error("Timed out. Please try again.")
             except Exception as e:
-                st.error(f"Verification failed: {str(e)}")
-    
-    with col2:
-        if st.button("↩️ Back"):
-            st.session_state.step = "credentials"
-            st.rerun()
+                st.error(f"Error: {str(e)}")
 
-# ============ STEP 3: SHOW CHANNELS & SYNC ============
+# ============ STEP 2: SHOW CHANNELS & SYNC ============
 elif st.session_state.step == "channels":
     channels = st.session_state.found_channels
     
