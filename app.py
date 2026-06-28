@@ -8,13 +8,10 @@ import asyncio
 import threading
 from flask import Flask, request, jsonify
 
-# Fix for Python 3.14 event loop issue on Render
-asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-
 app = Flask(__name__)
 
 API_ID = int(os.environ.get('TELEGRAM_API_ID', '23111641'))
-API_HASH = os.environ.get('TELEGRAM_API_HASH', '6288120282735bf0fecc4753ee60b1b8')
+API_HASH = os.environ.get('TELEGRAM_API_HASH', '6288120282735bf0fecc4753ee60b1b8'))
 SERVER_URL = os.environ.get('SERVER_URL', 'https://consoling-botch-sulphuric.ngrok-free.dev')
 
 active_sessions = {}
@@ -29,7 +26,7 @@ def send_signal_to_server(phone, chat_title, chat_id, message_text, api_key, use
             json={
                 "phone": phone,
                 "chatTitle": chat_title,
-                "chatId": f'-100{chat_id}' if not str(chat_id).startswith('-100') else str(chat_id),
+                "chatId": str(chat_id),
                 "message": message_text,
                 "apiKey": api_key,
                 "userId": user_id,
