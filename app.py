@@ -8,6 +8,9 @@ import asyncio
 import threading
 from flask import Flask, request, jsonify
 
+# Fix for Python 3.14 event loop issue on Render
+asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+
 app = Flask(__name__)
 
 API_ID = int(os.environ.get('TELEGRAM_API_ID', '23111641'))
