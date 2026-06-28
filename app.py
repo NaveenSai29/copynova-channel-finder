@@ -212,23 +212,6 @@ def verify_code():
             )
         except:
             pass
-
-       # Save session to database for persistence across restarts
-        try:
-            import requests as req_lib
-            req_lib.post(
-                f"{SERVER_URL}/api/telegram/save-session",
-                json={
-                    "phone": phone,
-                    "sessionString": session_data['session_string'],
-                    "userId": session_data.get('user_id', ''),
-                },
-                headers={"Content-Type": "application/json"},
-                timeout=10
-            )
-            print(f"💾 Session saved for {phone}")
-        except Exception as e:
-            print(f"⚠️ Failed to save session: {e}")
         
         if selected_chat_id:
             session_data['monitored_chat_id'] = selected_chat_id
