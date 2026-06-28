@@ -11,7 +11,7 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 API_ID = int(os.environ.get('TELEGRAM_API_ID', '23111641'))
-API_HASH = os.environ.get('TELEGRAM_API_HASH', '6288120282735bf0fecc4753ee60b1b8'))
+API_HASH = os.environ.get('TELEGRAM_API_HASH', '6288120282735bf0fecc4753ee60b1b8')
 SERVER_URL = os.environ.get('SERVER_URL', 'https://consoling-botch-sulphuric.ngrok-free.dev')
 
 active_sessions = {}
