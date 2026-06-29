@@ -81,7 +81,7 @@ def load_session_from_server(phone, user_id):
         if res.status_code == 200:
             data = res.json()
             return data.get('sessionString')
-    except:
+    except Exception:
         pass
     return None
 
@@ -130,7 +130,7 @@ async def monitor_channel(phone, chat_id, api_key, user_id, api_id, api_hash):
             
             # If not authorized, need new OTP
             if not await client.is_user_authorized():
-                print(f"⚠️ Session expired for {phone}, needs re-verification")
+                print(f"Session expired for {phone}, needs re-verification")
                 return
             
             entity = await client.get_entity(int(chat_id))
@@ -141,7 +141,7 @@ async def monitor_channel(phone, chat_id, api_key, user_id, api_id, api_hash):
             session_string = client.session.save()
             save_session_to_server(phone, session_string, user_id, api_key)
             
-            print(f"👂 Monitoring: {chat_title} for {phone}")
+            print(f"Monitoring: {chat_title} for {phone}")
             
             @client.on(events.NewMessage(chats=[int(chat_id)]))
             async def handler(event):
@@ -156,7 +156,7 @@ async def monitor_channel(phone, chat_id, api_key, user_id, api_id, api_hash):
                                       'GOLD', 'FOREX', 'NASDAQ', 'DOW']
                     
                     if any(kw in upper for kw in signal_keywords):
-                        print(f"📨 Signal from {chat_title}: {message_text[:80]}...")
+                        print(f"Signal from {chat_title}: {message_text[:80]}...")
                         send_signal_to_server(phone, chat_title, chat_id, message_text, api_key, user_id,
                                             'channel' if hasattr(entity, 'broadcast') and entity.broadcast else 'group',
                                             is_public)
@@ -168,39 +168,36 @@ async def monitor_channel(phone, chat_id, api_key, user_id, api_id, api_hash):
             while not _shutting_down:
                 await asyncio.sleep(5)
                 
-                # Check if still connected
                 if not client.is_connected() or not await client.is_user_authorized():
-                    print(f"🔄 Session lost for {phone}, reconnecting...")
+                    print(f"Session lost for {phone}, reconnecting...")
                     break
                 
-                # Save session every 5 minutes
                 if time.time() - last_save > 300:
                     try:
                         session_string = client.session.save()
                         save_session_to_server(phone, session_string, user_id, api_key)
                         last_save = time.time()
-                        print(f"💾 Session saved for {phone}")
+                        print(f"Session saved for {phone}")
                     except Exception as e:
                         print(f"Session save error: {e}")
                 
-                # Check if channel still exists
                 try:
                     await client.get_entity(int(chat_id))
-                except:
-                    print(f"⚠️ Channel {chat_id} not accessible")
+                except Exception:
+                    print(f"Channel {chat_id} not accessible")
                     break
                     
         except asyncio.CancelledError:
-            print(f"🛑 Monitor cancelled for {phone}")
+            print(f"Monitor cancelled for {phone}")
             break
         except Exception as e:
-            print(f"❌ Monitor error for {phone}: {e}")
-            print(f"🔄 Reconnecting in 30 seconds...")
+            print(f"Monitor error for {phone}: {e}")
+            print(f"Reconnecting in 30 seconds...")
         finally:
             if client and client.is_connected():
                 try:
                     await client.disconnect()
-                except:
+                except Exception:
                     pass
         
         if not _shutting_down:
@@ -291,84 +288,79 @@ def verify_code():
         from telethon import TelegramClient
         from telethon.sessions import StringSession
         from telethon.tl.functions.messages import GetDialogsRequest
-        from telethon.tl.types import InputPeerEmpty
+        from telethon.tl.types import InputPeerEmpty, PeerChannel, PeerChat
         
-    async def _verify():
-    from telethon import TelegramClient
-    from telethon.sessions import StringSession
-    from telethon.tl.functions.messages import GetDialogsRequest
-    from telethon.tl.types import InputPeerEmpty, PeerChannel, PeerChat
-    
-    client = TelegramClient(
-        StringSession(session_data['session_string']), 
-        int(session_data['api_id']), 
-        str(session_data['api_hash'])
-    )
-    try:
-        await client.connect()
-        await client.sign_in(
-            phone=phone,
-            code=code,
-            phone_code_hash=session_data['phone_code_hash']
-        )
-        
-        # Get dialogs (fast - single API call)
-        dialogs = await client(GetDialogsRequest(
-            offset_date=None, offset_id=0, offset_peer=InputPeerEmpty(),
-            limit=200, hash=0
-        ))
-        
-        # Collect channel/group peers (skip users/DMs)
-        channel_peers = []
-        for dialog in dialogs.dialogs:
-            peer = dialog.peer
-            if isinstance(peer, (PeerChannel, PeerChat)):
-                channel_peers.append(peer)
-        
-        print(f"Found {len(channel_peers)} channels/groups out of {len(dialogs.dialogs)} dialogs")
-        
-        # Fetch entities IN PARALLEL (massive speedup!)
-        entities = await asyncio.gather(
-            *[client.get_entity(peer) for peer in channel_peers],
-            return_exceptions=True
-        )
-        
-        channels = []
-        for entity in entities:
-            if isinstance(entity, Exception):
-                continue  # Skip failed lookups
-            
+        async def _verify():
+            client = TelegramClient(
+                StringSession(session_data['session_string']), 
+                int(session_data['api_id']), 
+                str(session_data['api_hash'])
+            )
             try:
-                raw_id = str(entity.id)
-                is_broadcast = getattr(entity, 'broadcast', False)
-                is_megagroup = getattr(entity, 'megagroup', False)
-                has_username = getattr(entity, 'username', None) is not None
+                await client.connect()
+                await client.sign_in(
+                    phone=phone,
+                    code=code,
+                    phone_code_hash=session_data['phone_code_hash']
+                )
                 
-                channel_id = f'-100{raw_id}' if not raw_id.startswith('-100') else raw_id
-                channels.append({
-                    'id': channel_id,
-                    'title': getattr(entity, 'title', 'Unknown'),
-                    'type': 'channel' if is_broadcast else 'group',
-                    'visibility': 'public' if has_username else 'private',
-                    'username': getattr(entity, 'username', None),
-                })
-            except Exception as e:
-                print(f"Skipping entity: {e}")
-                continue
+                # Get dialogs (single API call)
+                dialogs = await client(GetDialogsRequest(
+                    offset_date=None, offset_id=0, offset_peer=InputPeerEmpty(),
+                    limit=200, hash=0
+                ))
+                
+                # Collect only channel/group peers
+                channel_peers = []
+                for dialog in dialogs.dialogs:
+                    peer = dialog.peer
+                    if isinstance(peer, (PeerChannel, PeerChat)):
+                        channel_peers.append(peer)
+                
+                print(f"Found {len(channel_peers)} channels/groups out of {len(dialogs.dialogs)} dialogs")
+                
+                # Fetch entities IN PARALLEL
+                entities = await asyncio.gather(
+                    *[client.get_entity(peer) for peer in channel_peers],
+                    return_exceptions=True
+                )
+                
+                channels = []
+                for entity in entities:
+                    if isinstance(entity, Exception):
+                        continue
+                    
+                    try:
+                        raw_id = str(entity.id)
+                        is_broadcast = getattr(entity, 'broadcast', False)
+                        is_megagroup = getattr(entity, 'megagroup', False)
+                        has_username = getattr(entity, 'username', None) is not None
+                        
+                        channel_id = f'-100{raw_id}' if not raw_id.startswith('-100') else raw_id
+                        channels.append({
+                            'id': channel_id,
+                            'title': getattr(entity, 'title', 'Unknown'),
+                            'type': 'channel' if is_broadcast else 'group',
+                            'visibility': 'public' if has_username else 'private',
+                            'username': getattr(entity, 'username', None),
+                        })
+                    except Exception as e:
+                        print(f"Skipping entity: {e}")
+                        continue
+                
+                # Save session
+                session_string = client.session.save()
+                save_session_to_server(phone, session_string, session_data['user_id'], session_data['api_key'])
+                
+                session_data['session_string'] = session_string
+                session_data['channels'] = channels
+                
+                print(f"Processed {len(channels)} channels for {phone}")
+                return channels
+            finally:
+                await client.disconnect()
         
-        # Save session
-        session_string = client.session.save()
-        save_session_to_server(phone, session_string, session_data['user_id'], session_data['api_key'])
-        
-        session_data['session_string'] = session_string
-        session_data['channels'] = channels
-        
-        print(f"✅ Processed {len(channels)} channels for {phone}")
-        return channels
-    finally:
-        await client.disconnect()
-        
-        channels = run_async(_verify(), timeout=60)
+        channels = run_async(_verify(), timeout=120)
         
         # Sync channels to server
         import requests
@@ -379,14 +371,13 @@ def verify_code():
                 headers={"Content-Type": "application/json"},
                 timeout=10
             )
-        except:
-            pass
+        except Exception as e:
+            print(f"Sync channels error: {e}")
         
         # Start monitoring selected channel
         if selected_chat_id:
             session_data['monitored_chat_id'] = selected_chat_id
             
-            # Schedule monitoring in the persistent event loop
             loop = get_event_loop()
             asyncio.run_coroutine_threadsafe(
                 monitor_channel(
@@ -415,9 +406,6 @@ def reconnect_sessions():
     if _shutting_down:
         return jsonify({'success': False, 'error': 'Service shutting down'}), 503
     
-    data = request.json
-    api_key = data.get('apiKey', '')
-    
     import requests
     try:
         res = requests.get(
@@ -440,7 +428,7 @@ def reconnect_sessions():
                         loop
                     )
                     reconnected += 1
-                    print(f"🔄 Reconnected session for {phone}")
+                    print(f"Reconnected session for {phone}")
             
             return jsonify({'success': True, 'reconnected': reconnected})
     except Exception as e:
@@ -461,17 +449,15 @@ def health():
 def shutdown():
     """Graceful shutdown handler"""
     global _shutting_down
-    print("\n🛑 Shutting down gracefully...")
+    print("Shutting down gracefully...")
     _shutting_down = True
     
-    # Stop the event loop
     if _telethon_loop and not _telethon_loop.is_closed():
         _telethon_loop.call_soon_threadsafe(_telethon_loop.stop)
     
-    print("✅ Shutdown complete")
+    print("Shutdown complete")
     sys.exit(0)
 
-# Register signal handlers
 signal.signal(signal.SIGTERM, lambda signum, frame: shutdown())
 signal.signal(signal.SIGINT, lambda signum, frame: shutdown())
 
@@ -479,7 +465,6 @@ signal.signal(signal.SIGINT, lambda signum, frame: shutdown())
 # ─── Entry Point ───────────────────────────────────────────
 
 if __name__ == '__main__':
-    # Initialize the event loop early
     get_event_loop()
     
     port = int(os.environ.get('PORT', 5000))
