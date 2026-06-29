@@ -12,3 +12,5 @@ services:
         value: "6288120282735bf0fecc4753ee60b1b8"
       - key: PYTHONUNBUFFERED
         value: "true"
+      - key: PYTHON_VERSION
+        value: "3.12.11"
