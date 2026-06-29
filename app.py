@@ -293,58 +293,80 @@ def verify_code():
         from telethon.tl.functions.messages import GetDialogsRequest
         from telethon.tl.types import InputPeerEmpty
         
-        async def _verify():
-            client = TelegramClient(
-                StringSession(session_data['session_string']), 
-                int(session_data['api_id']), 
-                str(session_data['api_hash'])
-            )
+    async def _verify():
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+    from telethon.tl.functions.messages import GetDialogsRequest
+    from telethon.tl.types import InputPeerEmpty, PeerChannel, PeerChat
+    
+    client = TelegramClient(
+        StringSession(session_data['session_string']), 
+        int(session_data['api_id']), 
+        str(session_data['api_hash'])
+    )
+    try:
+        await client.connect()
+        await client.sign_in(
+            phone=phone,
+            code=code,
+            phone_code_hash=session_data['phone_code_hash']
+        )
+        
+        # Get dialogs (fast - single API call)
+        dialogs = await client(GetDialogsRequest(
+            offset_date=None, offset_id=0, offset_peer=InputPeerEmpty(),
+            limit=200, hash=0
+        ))
+        
+        # Collect channel/group peers (skip users/DMs)
+        channel_peers = []
+        for dialog in dialogs.dialogs:
+            peer = dialog.peer
+            if isinstance(peer, (PeerChannel, PeerChat)):
+                channel_peers.append(peer)
+        
+        print(f"Found {len(channel_peers)} channels/groups out of {len(dialogs.dialogs)} dialogs")
+        
+        # Fetch entities IN PARALLEL (massive speedup!)
+        entities = await asyncio.gather(
+            *[client.get_entity(peer) for peer in channel_peers],
+            return_exceptions=True
+        )
+        
+        channels = []
+        for entity in entities:
+            if isinstance(entity, Exception):
+                continue  # Skip failed lookups
+            
             try:
-                await client.connect()
-                await client.sign_in(
-                    phone=phone,
-                    code=code,
-                    phone_code_hash=session_data['phone_code_hash']
-                )
+                raw_id = str(entity.id)
+                is_broadcast = getattr(entity, 'broadcast', False)
+                is_megagroup = getattr(entity, 'megagroup', False)
+                has_username = getattr(entity, 'username', None) is not None
                 
-                dialogs = await client(GetDialogsRequest(
-                    offset_date=None, offset_id=0, offset_peer=InputPeerEmpty(),
-                    limit=200, hash=0
-                ))
-                
-                channels = []
-                for dialog in dialogs.dialogs:
-                    try:
-                        entity = await client.get_entity(dialog.peer)
-                        raw_id = str(entity.id)
-                        
-                        is_broadcast = hasattr(entity, 'broadcast') and entity.broadcast
-                        is_megagroup = hasattr(entity, 'megagroup') and entity.megagroup
-                        has_username = hasattr(entity, 'username') and entity.username is not None
-                        
-                        if is_broadcast or is_megagroup:
-                            channel_id = f'-100{raw_id}' if not raw_id.startswith('-100') else raw_id
-                            channels.append({
-                                'id': channel_id,
-                                'title': entity.title,
-                                'type': 'channel' if is_broadcast else 'group',
-                                'visibility': 'public' if has_username else 'private',
-                                'username': entity.username if has_username else None,
-                            })
-                    except:
-                        pass
-                
-                # Save session to database
-                session_string = client.session.save()
-                save_session_to_server(phone, session_string, session_data['user_id'], session_data['api_key'])
-                
-                # Update active session
-                session_data['session_string'] = session_string
-                session_data['channels'] = channels
-                
-                return channels
-            finally:
-                await client.disconnect()
+                channel_id = f'-100{raw_id}' if not raw_id.startswith('-100') else raw_id
+                channels.append({
+                    'id': channel_id,
+                    'title': getattr(entity, 'title', 'Unknown'),
+                    'type': 'channel' if is_broadcast else 'group',
+                    'visibility': 'public' if has_username else 'private',
+                    'username': getattr(entity, 'username', None),
+                })
+            except Exception as e:
+                print(f"Skipping entity: {e}")
+                continue
+        
+        # Save session
+        session_string = client.session.save()
+        save_session_to_server(phone, session_string, session_data['user_id'], session_data['api_key'])
+        
+        session_data['session_string'] = session_string
+        session_data['channels'] = channels
+        
+        print(f"✅ Processed {len(channels)} channels for {phone}")
+        return channels
+    finally:
+        await client.disconnect()
         
         channels = run_async(_verify(), timeout=60)
         
