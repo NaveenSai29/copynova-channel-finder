@@ -1,14 +1,16 @@
 """
 CopyNova AI - Telegram Service with Persistent Sessions
-- Saves sessions to database
-- Auto-reconnects on disconnect
-- Uses user's own API ID & Hash
+- Single event loop architecture
+- Proper cleanup on shutdown
+- Python 3.12 compatible
 """
 import os
 import asyncio
 import json
 import threading
 import time
+import signal
+import sys
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -21,6 +23,34 @@ SERVER_URL = os.environ.get('SERVER_URL', 'https://consoling-botch-sulphuric.ngr
 
 active_sessions = {}
 session_lock = threading.Lock()
+
+# Single persistent event loop for all Telethon operations
+_telethon_loop = None
+_loop_thread = None
+_shutting_down = False
+
+def get_event_loop():
+    """Get or create the persistent event loop"""
+    global _telethon_loop, _loop_thread
+    
+    if _telethon_loop is None or _telethon_loop.is_closed():
+        _telethon_loop = asyncio.new_event_loop()
+        _loop_thread = threading.Thread(target=_telethon_loop.run_forever, daemon=True)
+        _loop_thread.start()
+    
+    return _telethon_loop
+
+def run_async(coro, timeout=60):
+    """Run a coroutine in the persistent event loop safely"""
+    if _shutting_down:
+        raise RuntimeError("Service is shutting down")
+    
+    loop = get_event_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=timeout)
+
+
+# ─── Server Communication Helpers ───────────────────────────
 
 def save_session_to_server(phone, session_string, user_id, api_key):
     """Save session string to CopyNova database"""
@@ -59,7 +89,7 @@ def send_signal_to_server(phone, chat_title, chat_id, message_text, api_key, use
     """Forward a signal to the CopyNova server"""
     import requests
     try:
-        res = requests.post(
+        requests.post(
             f"{SERVER_URL}/api/telegram/signal-from-member",
             json={
                 "phone": phone,
@@ -77,12 +107,16 @@ def send_signal_to_server(phone, chat_title, chat_id, message_text, api_key, use
     except Exception as e:
         print(f"Failed to forward signal: {e}")
 
+
+# ─── Channel Monitor ───────────────────────────────────────
+
 async def monitor_channel(phone, chat_id, api_key, user_id, api_id, api_hash):
     """Monitor a specific channel with auto-reconnect"""
     from telethon import TelegramClient, events
     from telethon.sessions import StringSession
     
-    while True:
+    while not _shutting_down:
+        client = None
         try:
             # Try to load existing session
             session_string = load_session_from_server(phone, user_id)
@@ -131,20 +165,23 @@ async def monitor_channel(phone, chat_id, api_key, user_id, api_id, api_hash):
             
             # Keep alive with heartbeat
             last_save = time.time()
-            while True:
+            while not _shutting_down:
                 await asyncio.sleep(5)
                 
                 # Check if still connected
-                if not await client.is_user_authorized():
+                if not client.is_connected() or not await client.is_user_authorized():
                     print(f"🔄 Session lost for {phone}, reconnecting...")
                     break
                 
                 # Save session every 5 minutes
                 if time.time() - last_save > 300:
-                    session_string = client.session.save()
-                    save_session_to_server(phone, session_string, user_id, api_key)
-                    last_save = time.time()
-                    print(f"💾 Session saved for {phone}")
+                    try:
+                        session_string = client.session.save()
+                        save_session_to_server(phone, session_string, user_id, api_key)
+                        last_save = time.time()
+                        print(f"💾 Session saved for {phone}")
+                    except Exception as e:
+                        print(f"Session save error: {e}")
                 
                 # Check if channel still exists
                 try:
@@ -153,12 +190,24 @@ async def monitor_channel(phone, chat_id, api_key, user_id, api_id, api_hash):
                     print(f"⚠️ Channel {chat_id} not accessible")
                     break
                     
+        except asyncio.CancelledError:
+            print(f"🛑 Monitor cancelled for {phone}")
+            break
         except Exception as e:
             print(f"❌ Monitor error for {phone}: {e}")
             print(f"🔄 Reconnecting in 30 seconds...")
+        finally:
+            if client and client.is_connected():
+                try:
+                    await client.disconnect()
+                except:
+                    pass
         
-        # Wait before reconnect
-        await asyncio.sleep(30)
+        if not _shutting_down:
+            await asyncio.sleep(30)
+
+
+# ─── Flask Routes ──────────────────────────────────────────
 
 @app.route('/')
 def home():
@@ -171,6 +220,9 @@ def home():
 @app.route('/send-code', methods=['POST'])
 def send_code():
     """Send OTP using user's own API credentials"""
+    if _shutting_down:
+        return jsonify({'success': False, 'error': 'Service shutting down'}), 503
+    
     try:
         data = request.json
         phone = data.get('phone')
@@ -187,25 +239,26 @@ def send_code():
         
         async def _send():
             client = TelegramClient(StringSession(), int(api_id), str(api_hash))
-            await client.connect()
-            result = await client.send_code_request(phone)
-            session_string = client.session.save()
-            
-            with session_lock:
-                active_sessions[phone] = {
-                    'session_string': session_string,
-                    'phone_code_hash': result.phone_code_hash,
-                    'api_key': api_key,
-                    'user_id': user_id,
-                    'api_id': api_id,
-                    'api_hash': api_hash,
-                    'monitored_chat_id': None,
-                }
-            return True
+            try:
+                await client.connect()
+                result = await client.send_code_request(phone)
+                session_string = client.session.save()
+                
+                with session_lock:
+                    active_sessions[phone] = {
+                        'session_string': session_string,
+                        'phone_code_hash': result.phone_code_hash,
+                        'api_key': api_key,
+                        'user_id': user_id,
+                        'api_id': api_id,
+                        'api_hash': api_hash,
+                        'monitored_chat_id': None,
+                    }
+                return True
+            finally:
+                await client.disconnect()
         
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_send())
+        run_async(_send(), timeout=30)
         
         return jsonify({
             'success': True,
@@ -219,6 +272,9 @@ def send_code():
 @app.route('/verify-code', methods=['POST'])
 def verify_code():
     """Verify OTP, get channels, and start monitoring"""
+    if _shutting_down:
+        return jsonify({'success': False, 'error': 'Service shutting down'}), 503
+    
     try:
         data = request.json
         phone = data.get('phone')
@@ -243,53 +299,54 @@ def verify_code():
                 int(session_data['api_id']), 
                 str(session_data['api_hash'])
             )
-            await client.connect()
-            await client.sign_in(
-                phone=phone,
-                code=code,
-                phone_code_hash=session_data['phone_code_hash']
-            )
-            
-            dialogs = await client(GetDialogsRequest(
-                offset_date=None, offset_id=0, offset_peer=InputPeerEmpty(),
-                limit=200, hash=0
-            ))
-            
-            channels = []
-            for dialog in dialogs.dialogs:
-                try:
-                    entity = await client.get_entity(dialog.peer)
-                    raw_id = str(entity.id)
-                    
-                    is_broadcast = hasattr(entity, 'broadcast') and entity.broadcast
-                    is_megagroup = hasattr(entity, 'megagroup') and entity.megagroup
-                    has_username = hasattr(entity, 'username') and entity.username is not None
-                    
-                    if is_broadcast or is_megagroup:
-                        channel_id = f'-100{raw_id}' if not raw_id.startswith('-100') else raw_id
-                        channels.append({
-                            'id': channel_id,
-                            'title': entity.title,
-                            'type': 'channel' if is_broadcast else 'group',
-                            'visibility': 'public' if has_username else 'private',
-                            'username': entity.username if has_username else None,
-                        })
-                except:
-                    pass
-            
-            # Save session to database
-            session_string = client.session.save()
-            save_session_to_server(phone, session_string, session_data['user_id'], session_data['api_key'])
-            
-            # Update active session
-            session_data['session_string'] = session_string
-            session_data['channels'] = channels
-            
-            return channels
+            try:
+                await client.connect()
+                await client.sign_in(
+                    phone=phone,
+                    code=code,
+                    phone_code_hash=session_data['phone_code_hash']
+                )
+                
+                dialogs = await client(GetDialogsRequest(
+                    offset_date=None, offset_id=0, offset_peer=InputPeerEmpty(),
+                    limit=200, hash=0
+                ))
+                
+                channels = []
+                for dialog in dialogs.dialogs:
+                    try:
+                        entity = await client.get_entity(dialog.peer)
+                        raw_id = str(entity.id)
+                        
+                        is_broadcast = hasattr(entity, 'broadcast') and entity.broadcast
+                        is_megagroup = hasattr(entity, 'megagroup') and entity.megagroup
+                        has_username = hasattr(entity, 'username') and entity.username is not None
+                        
+                        if is_broadcast or is_megagroup:
+                            channel_id = f'-100{raw_id}' if not raw_id.startswith('-100') else raw_id
+                            channels.append({
+                                'id': channel_id,
+                                'title': entity.title,
+                                'type': 'channel' if is_broadcast else 'group',
+                                'visibility': 'public' if has_username else 'private',
+                                'username': entity.username if has_username else None,
+                            })
+                    except:
+                        pass
+                
+                # Save session to database
+                session_string = client.session.save()
+                save_session_to_server(phone, session_string, session_data['user_id'], session_data['api_key'])
+                
+                # Update active session
+                session_data['session_string'] = session_string
+                session_data['channels'] = channels
+                
+                return channels
+            finally:
+                await client.disconnect()
         
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        channels = loop.run_until_complete(_verify())
+        channels = run_async(_verify(), timeout=60)
         
         # Sync channels to server
         import requests
@@ -306,13 +363,16 @@ def verify_code():
         # Start monitoring selected channel
         if selected_chat_id:
             session_data['monitored_chat_id'] = selected_chat_id
-            monitor_thread = threading.Thread(
-                target=run_monitor,
-                args=(phone, selected_chat_id, session_data['api_key'], session_data['user_id'], 
-                      session_data['api_id'], session_data['api_hash']),
-                daemon=True
+            
+            # Schedule monitoring in the persistent event loop
+            loop = get_event_loop()
+            asyncio.run_coroutine_threadsafe(
+                monitor_channel(
+                    phone, selected_chat_id, session_data['api_key'], 
+                    session_data['user_id'], session_data['api_id'], session_data['api_hash']
+                ),
+                loop
             )
-            monitor_thread.start()
         
         return jsonify({
             'success': True,
@@ -326,19 +386,16 @@ def verify_code():
             del active_sessions[phone]
         return jsonify({'success': False, 'error': str(e)}), 500
 
-def run_monitor(phone, chat_id, api_key, user_id, api_id, api_hash):
-    """Run the async monitor in a thread"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(monitor_channel(phone, chat_id, api_key, user_id, api_id, api_hash))
 
 @app.route('/reconnect-sessions', methods=['POST'])
 def reconnect_sessions():
     """Reconnect all saved sessions from database"""
+    if _shutting_down:
+        return jsonify({'success': False, 'error': 'Service shutting down'}), 503
+    
     data = request.json
     api_key = data.get('apiKey', '')
     
-    # Get all users with saved sessions and reconnect
     import requests
     try:
         res = requests.get(
@@ -347,26 +404,61 @@ def reconnect_sessions():
         )
         if res.status_code == 200:
             sessions = res.json().get('sessions', [])
+            loop = get_event_loop()
+            reconnected = 0
+            
             for sess in sessions:
-                if sess.get('phone') not in active_sessions:
-                    # Start monitoring for this session
-                    monitor_thread = threading.Thread(
-                        target=run_monitor,
-                        args=(sess['phone'], sess['chatId'], sess['apiKey'], sess['userId'],
-                              sess.get('apiId', FALLBACK_API_ID), sess.get('apiHash', FALLBACK_API_HASH)),
-                        daemon=True
+                phone = sess.get('phone')
+                if phone and phone not in active_sessions:
+                    asyncio.run_coroutine_threadsafe(
+                        monitor_channel(
+                            phone, sess['chatId'], sess['apiKey'], sess['userId'],
+                            sess.get('apiId', FALLBACK_API_ID), sess.get('apiHash', FALLBACK_API_HASH)
+                        ),
+                        loop
                     )
-                    monitor_thread.start()
-                    print(f"🔄 Reconnected session for {sess['phone']}")
-            return jsonify({'success': True, 'reconnected': len(sessions)})
+                    reconnected += 1
+                    print(f"🔄 Reconnected session for {phone}")
+            
+            return jsonify({'success': True, 'reconnected': reconnected})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+    
     return jsonify({'success': True, 'reconnected': 0})
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'healthy', 'users': len(active_sessions)})
+    return jsonify({
+        'status': 'healthy' if not _shutting_down else 'shutting_down',
+        'users': len(active_sessions)
+    })
+
+
+# ─── Graceful Shutdown ─────────────────────────────────────
+
+def shutdown():
+    """Graceful shutdown handler"""
+    global _shutting_down
+    print("\n🛑 Shutting down gracefully...")
+    _shutting_down = True
+    
+    # Stop the event loop
+    if _telethon_loop and not _telethon_loop.is_closed():
+        _telethon_loop.call_soon_threadsafe(_telethon_loop.stop)
+    
+    print("✅ Shutdown complete")
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, lambda signum, frame: shutdown())
+signal.signal(signal.SIGINT, lambda signum, frame: shutdown())
+
+
+# ─── Entry Point ───────────────────────────────────────────
 
 if __name__ == '__main__':
+    # Initialize the event loop early
+    get_event_loop()
+    
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
