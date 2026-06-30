@@ -13,7 +13,7 @@ app = Flask(__name__)
 # Default credentials (users can use their own)
 DEFAULT_API_ID = int(os.environ.get('TELEGRAM_API_ID', '23111641'))
 DEFAULT_API_HASH = os.environ.get('TELEGRAM_API_HASH', '6288120282735bf0fecc4753ee60b1b8')
-SERVER_URL = os.environ.get('SERVER_URL', 'https://your-server.com')
+SERVER_URL = os.environ.get('SERVER_URL', 'https://consoling-botch-sulphuric.ngrok-free.dev')
 
 active_sessions = {}
 session_lock = threading.Lock()
