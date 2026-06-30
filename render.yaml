@@ -12,4 +12,4 @@ services:
       - key: TELEGRAM_API_HASH
         value: "6288120282735bf0fecc4753ee60b1b8"
       - key: SERVER_URL
-        value: "https://your-vercel-app.vercel.app"
+        value: "https://consoling-botch-sulphuric.ngrok-free.dev"
