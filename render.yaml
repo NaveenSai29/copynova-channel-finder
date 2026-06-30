@@ -5,6 +5,7 @@ services:
     region: singapore
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    runtime: python311
     envVars:
       - key: TELEGRAM_API_ID
         value: "23111641"
@@ -12,5 +13,3 @@ services:
         value: "6288120282735bf0fecc4753ee60b1b8"
       - key: SERVER_URL
         value: "https://your-vercel-app.vercel.app"
-      - key: PYTHON_VERSION
-        value: "3.11.0"
